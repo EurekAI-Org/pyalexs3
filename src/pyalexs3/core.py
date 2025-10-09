@@ -40,6 +40,22 @@ signal.signal(signal.SIGINT, handle_sigint)
 
 
 class OpenAlexS3Processor:
+    """
+    Download OpenAlex NDJSON dumps from S3 and load them into DuckDB.
+
+    Flow:
+      1) List S3 keys for an object type, filter by date (and optional parts).
+      2) Download in parallel with Rich progress bars.
+      3) Load with DuckDB `read_ndjson_auto(...)` using a known schema.
+      4) Create or append to a DuckDB table, then clean up temp files.
+
+    Side Effects:
+      - Installs/loads DuckDB `httpfs` extension.
+      - Creates (and may drop) DuckDB tables.
+      - Deletes `download_dir` after each operation.
+      - Performs network I/O to S3; uses a thread pool.
+    """
+
     def __init__(
         self,
         n_workers: int = 4,
@@ -338,6 +354,35 @@ class OpenAlexS3Processor:
         download_dir: str = "./.cache/oa",
         where_clause: Optional[str] = None,
     ):
+        """
+        Loads all the *.gz files in OpenAlex S3 directories as one complete table.
+
+        Parameters:
+        -----------
+        obj_type: str
+            The OpenAlex object type i.e. 'works', 'authors', 'sources', etc.
+
+        cols: Optional[List[str]] = None
+            Specific list of columns that needs to be loaded from the table.
+
+        limit: Optional[int] = None
+            Limit the number of records to be loaded into the table.
+
+        start_date: Optional[str] = None
+            The starting date from which the processing should begin.
+
+        end_date: Optional[str] = None
+            The ending date at which the processing should stop.
+
+        parts: Optional[List[int]] = None
+            The part number to load from each date.
+
+        download_dir: str; default="./.cache/oa"
+            Folder path where the gzip files will be downloaded temporarily.
+
+        where_clause: Optional[str] = None
+            A SQL-like where clause to filter out the necessary table.
+        """
         self.__type_check(
             obj_type=obj_type,
             download_dir=download_dir,
@@ -413,6 +458,38 @@ class OpenAlexS3Processor:
         download_dir: Optional[str] = "./.cache/oa",
         where_clause: Optional[str] = None,
     ):
+        """
+        Loads all the *.gz files in OpenAlex S3 directories in batches and appends to one complete table.
+
+        Parameters:
+        -----------
+        obj_type: str
+            The OpenAlex object type i.e. 'works', 'authors', 'sources', etc.
+
+        batch_sz: int; default=10
+            The batch size for each batch.
+
+        cols: Optional[List[str]] = None
+            Specific list of columns that needs to be loaded from the table.
+
+        limit: Optional[int] = None
+            Limit the number of records to be loaded into the table.
+
+        start_date: Optional[str] = None
+            The starting date from which the processing should begin.
+
+        end_date: Optional[str] = None
+            The ending date at which the processing should stop.
+
+        parts: Optional[List[int]] = None
+            The part number to load from each date.
+
+        download_dir: str; default="./.cache/oa"
+            Folder path where the gzip files will be downloaded temporarily.
+
+        where_clause: Optional[str] = None
+            A SQL-like where clause to filter out the necessary table.
+        """
         self.__type_check(
             obj_type=obj_type,
             download_dir=download_dir,
@@ -489,6 +566,42 @@ class OpenAlexS3Processor:
         parts: Optional[List[int]] = None,
         download_dir: str = "./.cache/oa",
     ) -> Generator[duckdb.DuckDBPyRelation, None, None]:
+        """
+        Lazy Loads all the *.gz files in OpenAlex S3 directories in batches.
+
+        Parameters:
+        -----------
+        obj_type: str
+            The OpenAlex object type i.e. 'works', 'authors', 'sources', etc.
+
+        cols: Optional[List[str]] = None
+            Specific list of columns that needs to be loaded from the table.
+
+        batch_sz: int; default=10
+            The batch size for each batch.
+
+        limit: Optional[int] = None
+            Limit the number of records to be loaded into the table.
+
+        start_date: Optional[str] = None
+            The starting date from which the processing should begin.
+
+        end_date: Optional[str] = None
+            The ending date at which the processing should stop.
+
+        parts: Optional[List[int]] = None
+            The part number to load from each date.
+
+        download_dir: str; default="./.cache/oa"
+            Folder path where the gzip files will be downloaded temporarily.
+
+        where_clause: Optional[str] = None
+            A SQL-like where clause to filter out the necessary table.
+
+        Returns:
+        --------
+        A DuckDBPyRelation object
+        """
 
         self.__type_check(
             obj_type=obj_type,
@@ -526,16 +639,14 @@ class OpenAlexS3Processor:
                 parts=parts,
                 download_dir=download_dir,
             )
-            # query = f"CREATE TEMPORARY TABLE {obj_type} AS {select_clause}"
 
-            # self.__conn.execute(query)
-            # rel = self.__conn.sql(f"SELECT * FROM {obj_type}")
             rel = self.__conn.sql(select_clause)
 
             try:
                 yield rel
+
             finally:
-                # self.__conn.execute(f"DROP TABLE IF EXISTS {obj_type}")
+
                 shutil.rmtree(download_dir)
 
     def get_table(
