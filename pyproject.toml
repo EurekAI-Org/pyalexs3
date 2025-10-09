@@ -1,6 +1,6 @@
 [project]
 name = "pyalexs3"
-version = "0.1.1"
+version = "0.1.2"
 description = "OpenAlex S3 processor"
 readme = "README.md"
 requires-python = ">=3.10"
