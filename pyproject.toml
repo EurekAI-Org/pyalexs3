@@ -1,6 +1,6 @@
 [project]
 name = "pyalexs3"
-version = "0.1.0"
+version = "0.1.1"
 description = "OpenAlex S3 processor"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +35,7 @@ dev = [
     "ruff",
     "mypy",
     "black>=24.4.2",
+    "boto3-stubs[s3]",
 ]
 
 
@@ -64,24 +65,26 @@ addopts = "-ra"
 [tool.black]
 line-length = 88
 target-version = ["py310", "py311", "py312"]
-extend-exclude = [
-  "/build/",
-  "/dist/",
-  "^\\.venv/",
-  "^\\.mypy_cache/",
-  "^\\.pytest_cache/",
-]
+
+extend-exclude = '''
+/(
+    \.venv
+  | \.mypy_cache
+  | \.pytest_cache
+  | build
+  | dist
+)/
+'''
 
 
 [tool.ruff]
-line-length = 88
-# Ruff is lint-only (Black handles formatting)
 lint.select = ["E","F","W","I","UP","B","SIM","C4","PIE","RUF"]
 lint.ignore = [
   "E501",  # Black handles line length
 ]
 # optional: tell ruff where your source is
 src = ["src", "tests"]
+target-version = "py310"
 
 [tool.mypy]
 python_version = "3.10"

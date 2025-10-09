@@ -1,11 +1,12 @@
-import json
 import gzip
-from pathlib import Path
-import boto3
-import pyalexs3.core as core_mod
-
+import json
 from io import BytesIO
+from pathlib import Path
+
+import boto3
 from moto import mock_aws
+
+import pyalexs3.core as core_mod
 from pyalexs3.core import OpenAlexS3Processor
 
 

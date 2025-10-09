@@ -14,12 +14,18 @@ By participating, you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md).
   uv sync --extra dev
   ```
 - Run checks:
+    **If you are using Linux just run the `./checks.sh`**
     ```bash
     uv run pytest -q
-    uv run ruff check .
+    uv run ruff check . --fix --select I
+    uv run ruff check . --fix
+    uv run ruff check . --fix --unsafe-fixes
+    uv run black . 
     uv run mypy src
     uv run black --check .
     ```
+- Change version in `pyproject.toml` `[project][version]`.
+
 > Use uv run black . locally to auto-format before committing.
 
 # Tests
