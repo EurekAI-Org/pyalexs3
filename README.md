@@ -97,10 +97,10 @@ for rel in p.lazy_load(
 # API
 
 `OpenAlexS3Processor(n_workers: int = 4, persist_path: str | None = None)`
-    - `n_workers`: number of threads for downloads.
-    - `persist_path`: if set, uses a persistent DuckDB database file at this path; otherwise an in-memory DB.
+ - `n_workers`: number of threads for downloads.
+- `persist_path`: if set, uses a persistent DuckDB database file at this path; otherwise an in-memory DB.
 
-    - `load_table(...) -> None`
+- `load_table(...) -> None`
         Downloads all matching files and creates/appends a DuckDB table named after `obj_type`.
 
         Args:
@@ -112,15 +112,15 @@ for rel in p.lazy_load(
         - `download_dir`: temporary folder for gz files (deleted after load)
         - `where_clause`: SQL predicate like "WHERE title IS NOT NULL"
 
-    - `batch_load_table(...) -> None`
+- `batch_load_table(...) -> None`
         Same args as `load_table`, plus:
             - `batch_sz`: approx. number of S3 objects per batch. Each batch is read and inserted (or CREATE on the first), then temp files are deleted.
-    - `lazy_load(...) -> Iterator[duckdb.DuckDBPyRelation]`
+- `lazy_load(...) -> Iterator[duckdb.DuckDBPyRelation]`
         Yields one `Relation` per batch. You can `.show()`, `.df()`, or run more SQL. Temp files are removed after each yield.
 
-    - `get_table(obj_type: str, cols: list[str] | None = None)` -> duckdb.DuckDBPyRelation
+- `get_table(obj_type: str, cols: list[str] | None = None)` -> duckdb.DuckDBPyRelation
         Convenience accessor to query the created table.
-    - `s3_obj_types -> list[str]`
+- `s3_obj_types -> list[str]`
         Returns supported OpenAlex object types.
 
 
