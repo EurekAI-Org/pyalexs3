@@ -1,4 +1,3 @@
-import datetime
 from pyalexs3.core import OpenAlexS3Processor
 
 
