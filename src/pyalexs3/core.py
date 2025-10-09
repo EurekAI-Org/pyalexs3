@@ -1,20 +1,21 @@
 from __future__ import annotations
-from typing import Dict, Generator, List, Optional
 
-import duckdb
-import boto3
-import time
+import datetime
 import os
 import re
-import signal
-import datetime
 import shutil
+import signal
+import time
+from collections.abc import Generator
+from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
+from pathlib import Path
+from threading import Event
 
+import boto3
+import duckdb
 from botocore import UNSIGNED
 from botocore.config import Config
-from threading import Event
-from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
-
+from rich import print as rprint
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -24,10 +25,8 @@ from rich.progress import (
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
-from rich import print as rprint
 
 from .schemas import WORKS_SCHEMA
-
 
 done_event = Event()
 
@@ -59,7 +58,7 @@ class OpenAlexS3Processor:
     def __init__(
         self,
         n_workers: int = 4,
-        persist_path: Optional[str] = None,
+        persist_path: str | None = None,
     ):
 
         self.__s3_client = boto3.client("s3", config=Config(signature_version=UNSIGNED))
@@ -67,7 +66,9 @@ class OpenAlexS3Processor:
         self.__persist_path = persist_path
 
         if self.__persist_path is not None:
-            os.makedirs(os.path.dirname(persist_path), exist_ok=True)
+            # os.makedirs(os.path.dirname(persist_path), exist_ok=True)
+            path = Path(self.__persist_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
             self.__conn = duckdb.connect(self.__persist_path)
         else:
             self.__conn = duckdb.connect()
@@ -88,23 +89,23 @@ class OpenAlexS3Processor:
             TimeRemainingColumn(),
         )
 
-    def __get_schema(self, obj_type: str) -> Dict:
+    def __get_schema(self, obj_type: str) -> dict:
         if obj_type == "works":
             return WORKS_SCHEMA
+
+        raise ValueError(f"Unsupported obj_type: {obj_type!r}")
 
     def __extract_date(self, txt: str):
         pat = re.compile(r"(updated_date=([0-9]+-[0-9]+-[0-9]+))")
         mat = pat.search(txt)
         return mat.group(2) if mat is not None else ""
 
-    def __get_start_date(self) -> str:
+    def __get_start_date(self, obj_type: str) -> str:
 
         start_date = datetime.date.today()
 
         paginator = self.__s3_client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(
-            Bucket="openalex", Prefix=f"data/{self.__obj_type}/"
-        ):
+        for page in paginator.paginate(Bucket="openalex", Prefix=f"data/{obj_type}/"):
             for obj in page.get("Contents", []):
                 if obj["Key"].split("/")[-1].lower() == "manifest":
                     continue
@@ -113,6 +114,8 @@ class OpenAlexS3Processor:
                 if dat != "" and datetime.date.fromisoformat(dat) < start_date:
                     return dat
 
+        return start_date.isoformat()
+
     def __check_date_fmt(self, txt: str) -> bool:
         try:
             datetime.date.fromisoformat(txt)
@@ -120,16 +123,10 @@ class OpenAlexS3Processor:
         except ValueError:
             return False
 
-    def __extract_date(self, txt: str) -> str:
-        pat = re.compile(r"(updated_date=([0-9]+-[0-9]+-[0-9]+))")
-        mat = pat.search(txt)
-
-        return mat.group(2) if mat is not None else ""
-
-    def __get_files(self, obj_type: str, start_date: str, end_date: str) -> List[str]:
-        file_list = list()
-        start_date = datetime.date.fromisoformat(start_date)
-        end_date = datetime.date.fromisoformat(end_date)
+    def __get_files(self, obj_type: str, start_date: str, end_date: str) -> list[str]:
+        file_list = []
+        st = datetime.date.fromisoformat(start_date)
+        ed = datetime.date.fromisoformat(end_date)
 
         paginator = self.__s3_client.get_paginator("list_objects_v2")
 
@@ -138,19 +135,19 @@ class OpenAlexS3Processor:
                 if obj["Key"].split("/")[-1].lower() == "manifest":
                     continue
                 dat = self.__extract_date(obj["Key"])
-                if start_date <= datetime.date.fromisoformat(dat) <= end_date:
+                if st <= datetime.date.fromisoformat(dat) <= ed:
                     file_list.append(obj["Key"])
 
         return file_list
 
     def __get_batch_files(
         self, obj_type: str, start_date: str, end_date: str, batch_sz: int
-    ) -> Generator[List[str], None, None]:
+    ) -> Generator[list[str], None, None]:
 
-        file_list = list()
+        file_list: list[str] = []
 
-        start_date = datetime.date.fromisoformat(start_date)
-        end_date = datetime.date.fromisoformat(end_date)
+        st = datetime.date.fromisoformat(start_date)
+        ed = datetime.date.fromisoformat(end_date)
 
         paginator = self.__s3_client.get_paginator("list_objects_v2")
 
@@ -165,7 +162,7 @@ class OpenAlexS3Processor:
                     continue
 
                 dat = self.__extract_date(obj["Key"])
-                if start_date <= datetime.date.fromisoformat(dat) <= end_date:
+                if st <= datetime.date.fromisoformat(dat) <= ed:
                     file_list.append(obj["Key"])
 
         if len(file_list):
@@ -192,7 +189,7 @@ class OpenAlexS3Processor:
         obj_type: str,
         start_date: str,
         end_date: str,
-        parts: str | List[int],
+        parts: str | list[int],
         download_dir: str,
     ):
         files = self.__get_files(
@@ -207,7 +204,7 @@ class OpenAlexS3Processor:
                 in set(parts)
             ]
 
-        futures = list()
+        futures = []
 
         with self.__progress:
             with ThreadPoolExecutor(max_workers=4) as pool:
@@ -217,7 +214,7 @@ class OpenAlexS3Processor:
                             Bucket="openalex", Key=f
                         )["ContentLength"]
                         task_id = self.__progress.add_task(
-                            f"Downloading", filename=f, total=file_sz
+                            "Downloading", filename=f, total=file_sz
                         )
                         future = pool.submit(self.__copy_data, task_id, f, download_dir)
                         futures.append(future)
@@ -229,8 +226,8 @@ class OpenAlexS3Processor:
 
     def __batch_download_files(
         self,
-        files: List[str],
-        parts: str | List[int],
+        files: list[str],
+        parts: str | list[int],
         download_dir: str,
     ):
 
@@ -242,7 +239,7 @@ class OpenAlexS3Processor:
                 in set(parts)
             ]
 
-        futures = list()
+        futures = []
         with self.__progress:
             with ThreadPoolExecutor(max_workers=4) as pool:
                 for f in files:
@@ -251,7 +248,7 @@ class OpenAlexS3Processor:
                             Bucket="openalex", Key=f
                         )["ContentLength"]
                         task_id = self.__progress.add_task(
-                            f"Downloading", filename=f, total=file_sz
+                            "Downloading", filename=f, total=file_sz
                         )
                         future = pool.submit(self.__copy_data, task_id, f, download_dir)
                         futures.append(future)
@@ -265,13 +262,13 @@ class OpenAlexS3Processor:
         self,
         obj_type: str,
         download_dir: str,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        parts: Optional[List[int]] = None,
-        cols: Optional[List[str]] = None,
-        limit: Optional[int] = None,
-        batch_sz: Optional[int] = None,
-        where_clause: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        parts: list[int] | None = None,
+        cols: list[str] | None = None,
+        limit: int | None = None,
+        batch_sz: int | None = None,
+        where_clause: str | None = None,
     ):
         assert isinstance(
             obj_type, str
@@ -307,17 +304,17 @@ class OpenAlexS3Processor:
             )
 
         if start_date is not None and not self.__check_date_fmt(start_date):
-            raise ValueError(f"Expected end_date of the format 'YYYY-mm-dd'")
+            raise ValueError("Expected end_date of the format 'YYYY-mm-dd'")
 
         if end_date is not None and not self.__check_date_fmt(end_date):
-            raise ValueError(f"Expected end_date of the format 'YYYY-mm-dd'")
+            raise ValueError("Expected end_date of the format 'YYYY-mm-dd'")
 
         if parts is not None and not isinstance(parts, list):
             raise ValueError(
                 f"Expected parts to be of type 'list'. Found {type(parts)}"
             )
 
-        if parts is not None and not all([isinstance(p, int) for p in parts]):
+        if parts is not None and not all(isinstance(p, int) for p in parts):
             raise ValueError("Expected parts to be a list<int>.")
 
         if cols is not None and not isinstance(cols, list):
@@ -325,8 +322,8 @@ class OpenAlexS3Processor:
                 f"Expected cols to be of type 'list'. Found type {type(cols)}"
             )
 
-        if cols is not None and not all([isinstance(col, str) for col in cols]):
-            raise ValueError(f"Expected cols to be of type 'list<str>'")
+        if cols is not None and not all(isinstance(col, str) for col in cols):
+            raise ValueError("Expected cols to be of type 'list<str>'")
 
         if limit is not None and not isinstance(limit, int):
             raise ValueError(
@@ -342,17 +339,26 @@ class OpenAlexS3Processor:
             raise ValueError(
                 f"Expected where_clause to be of type 'str'. Found type {type(where_clause)}"
             )
+        if (
+            start_date is not None
+            and end_date is not None
+            and datetime.date.fromisoformat(start_date)
+            > datetime.date.fromisoformat(end_date)
+        ):
+            raise ValueError(
+                f"start_date cannot be greater than end_date. Found start_date={start_date}, end_date={end_date}"
+            )
 
     def load_table(
         self,
         obj_type: str,
-        cols: Optional[List[str]] = None,
-        limit: Optional[int] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        parts: Optional[List[int]] = None,
+        cols: list[str] | None = None,
+        limit: int | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        parts: list[int] | None = None,
         download_dir: str = "./.cache/oa",
-        where_clause: Optional[str] = None,
+        where_clause: str | None = None,
     ):
         """
         Loads all the *.gz files in OpenAlex S3 directories as one complete table.
@@ -396,20 +402,24 @@ class OpenAlexS3Processor:
 
         os.makedirs(download_dir, exist_ok=True)
 
-        parts = "*" if parts is None else parts
-        start_date = self.__get_start_date() if start_date is None else start_date
-        end_date = datetime.date.today() if end_date is None else end_date
-        cols = "*" if cols is None else ",".join(cols)
-        limit = f" LIMIT {limit}" if limit is not None else ""
-        where_clause = f" {where_clause.strip()}" if where_clause is not None else ""
+        parts_sel = "*" if parts is None else parts
+        start_date_sel = (
+            self.__get_start_date(obj_type) if start_date is None else start_date
+        )
+        end_date_sel = (
+            datetime.date.today().isoformat() if end_date is None else end_date
+        )
+        cols_sel = "*" if cols is None else ",".join(cols)
+        limit_sel = f" LIMIT {limit}" if limit is not None else ""
+        where_sel = f" {where_clause.strip()}" if where_clause is not None else ""
 
         rprint("Downloading the files from s3...")
 
         self.__download_files(
             obj_type=obj_type,
-            start_date=start_date,
-            end_date=end_date,
-            parts=parts,
+            start_date=start_date_sel,
+            end_date=end_date_sel,
+            parts=parts_sel,
             download_dir=download_dir,
         )
 
@@ -417,26 +427,25 @@ class OpenAlexS3Processor:
 
         t0 = time.time()
 
-        select_clause = f"SELECT {cols} FROM read_ndjson_auto('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type)}){where_clause}{limit}"
+        select_clause = f"SELECT {cols_sel} FROM read_ndjson_auto('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type)}){where_sel}{limit_sel}"
 
-        table_exists = (
-            self.__conn.execute(
-                f"SELECT count(*) FROM duckdb_tables() WHERE table_name='{obj_type}'"
-            ).fetchone()[0]
-            > 0
-        )
+        exists_cmd = self.__conn.execute(
+            f"SELECT count(*) FROM duckdb_tables() WHERE table_name='{obj_type}'"
+        ).fetchone()
+        if exists_cmd is not None:
+            table_exists = exists_cmd[0] > 0
 
         if table_exists:
             sql_query = f"INSERT INTO {obj_type} {select_clause}"
         else:
             if self.__persist_path is None:
                 sql_query = f"""
-                CREATE TEMPORARY TABLE {obj_type} AS 
+                CREATE TEMPORARY TABLE {obj_type} AS
                 {select_clause}
                 """
             else:
                 sql_query = f"""
-                CREATE TABLE {obj_type} AS 
+                CREATE TABLE {obj_type} AS
                 {select_clause}
                 """
 
@@ -450,13 +459,13 @@ class OpenAlexS3Processor:
         self,
         obj_type: str,
         batch_sz: int = 10,
-        cols: Optional[List[str]] = None,
-        limit: Optional[int] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        parts: Optional[List[int]] = None,
-        download_dir: Optional[str] = "./.cache/oa",
-        where_clause: Optional[str] = None,
+        cols: list[str] | None = None,
+        limit: int | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        parts: list[int] | None = None,
+        download_dir: str = "./.cache/oa",
+        where_clause: str | None = None,
     ):
         """
         Loads all the *.gz files in OpenAlex S3 directories in batches and appends to one complete table.
@@ -502,36 +511,39 @@ class OpenAlexS3Processor:
             where_clause=where_clause,
         )
 
-        parts = "*" if parts is None else parts
-        start_date = self.__get_start_date() if start_date is None else start_date
-        end_date = datetime.date.today() if end_date is None else end_date
-        cols = "*" if cols is None else ",".join(cols)
-        limit = f" LIMIT {limit}" if limit is not None else ""
-        where_clause = f" {where_clause.strip()}" if where_clause is not None else ""
+        parts_sel = "*" if parts is None else parts
+        start_date_sel = (
+            self.__get_start_date(obj_type) if start_date is None else start_date
+        )
+        end_date_sel = (
+            datetime.date.today().isoformat() if end_date is None else end_date
+        )
+        cols_sel = "*" if cols is None else ",".join(cols)
+        limit_sel = f" LIMIT {limit}" if limit is not None else ""
+        where_sel = f" {where_clause.strip()}" if where_clause is not None else ""
 
         files_gen = self.__get_batch_files(
             obj_type=obj_type,
             batch_sz=batch_sz,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=start_date_sel,
+            end_date=end_date_sel,
         )
 
         t0 = time.time()
-        select_clause = f"SELECT {cols} FROM read_ndjson_auto('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type)}){where_clause}{limit}"
+        select_clause = f"SELECT {cols_sel} FROM read_ndjson_auto('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type)}){where_sel}{limit_sel}"
 
         for file_ls in files_gen:
 
-            table_exists = (
-                self.__conn.execute(
-                    f"SELECT count(*) FROM duckdb_tables() WHERE table_name='{obj_type}'"
-                ).fetchone()[0]
-                > 0
-            )
+            exists_cmd = self.__conn.execute(
+                f"SELECT count(*) FROM duckdb_tables() WHERE table_name='{obj_type}'"
+            ).fetchone()
+            if exists_cmd is not None:
+                table_exists = exists_cmd[0] > 0
 
             os.makedirs(download_dir, exist_ok=True)
             self.__batch_download_files(
                 files=file_ls,
-                parts=parts,
+                parts=parts_sel,
                 download_dir=download_dir,
             )
 
@@ -540,12 +552,12 @@ class OpenAlexS3Processor:
             else:
                 if self.__persist_path:
                     sql_query = f"""
-                    CREATE TEMPORARY TABLE {obj_type} AS 
+                    CREATE TEMPORARY TABLE {obj_type} AS
                     {select_clause}
                     """
                 else:
                     sql_query = f"""
-                    CREATE TABLE {obj_type} AS 
+                    CREATE TABLE {obj_type} AS
                     {select_clause}
                     """
 
@@ -557,13 +569,13 @@ class OpenAlexS3Processor:
     def lazy_load(
         self,
         obj_type: str,
-        cols: Optional[List[str]] = None,
+        cols: list[str] | None = None,
         batch_sz: int = 10,
-        where_clause: Optional[str] = None,
-        limit: Optional[int] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        parts: Optional[List[int]] = None,
+        where_clause: str | None = None,
+        limit: int | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        parts: list[int] | None = None,
         download_dir: str = "./.cache/oa",
     ) -> Generator[duckdb.DuckDBPyRelation, None, None]:
         """
@@ -615,28 +627,32 @@ class OpenAlexS3Processor:
             where_clause=where_clause,
         )
 
-        parts = "*" if parts is None else parts
-        start_date = self.__get_start_date() if start_date is None else start_date
-        end_date = datetime.date.today() if end_date is None else end_date
-        cols = "*" if cols is None else ",".join(cols)
-        limit = f" LIMIT {limit}" if limit is not None else ""
-        where_clause = f" {where_clause.strip()}" if where_clause is not None else ""
+        parts_sel = "*" if parts is None else parts
+        start_date_sel = (
+            self.__get_start_date(obj_type) if start_date is None else start_date
+        )
+        end_date_sel = (
+            datetime.date.today().isoformat() if end_date is None else end_date
+        )
+        cols_sel = "*" if cols is None else ",".join(cols)
+        limit_sel = f" LIMIT {limit}" if limit is not None else ""
+        where_sel = f" {where_clause.strip()}" if where_clause is not None else ""
 
         files_gen = self.__get_batch_files(
             obj_type=obj_type,
             batch_sz=batch_sz,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=start_date_sel,
+            end_date=end_date_sel,
         )
 
-        select_clause = f"SELECT {cols} FROM read_ndjson_auto('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type)}){where_clause}{limit}"
+        select_clause = f"SELECT {cols_sel} FROM read_ndjson_auto('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type)}){where_sel}{limit_sel}"
 
         for fb in files_gen:
             os.makedirs(download_dir, exist_ok=True)
 
             self.__batch_download_files(
                 files=fb,
-                parts=parts,
+                parts=parts_sel,
                 download_dir=download_dir,
             )
 
@@ -650,7 +666,7 @@ class OpenAlexS3Processor:
                 shutil.rmtree(download_dir)
 
     def get_table(
-        self, obj_type: str, cols: Optional[List[str]] = None
+        self, obj_type: str, cols: list[str] | None = None
     ) -> duckdb.DuckDBPyRelation:
 
         assert isinstance(
@@ -678,15 +694,15 @@ class OpenAlexS3Processor:
                 f"Expected cols to be of type 'list'. Found type {type(cols)}"
             )
 
-        if cols is not None and not all([isinstance(col, str) for col in cols]):
-            raise ValueError(f"Expected cols to be of type 'list<str>'")
+        if cols is not None and not all(isinstance(col, str) for col in cols):
+            raise ValueError("Expected cols to be of type 'list<str>'")
 
-        cols = "*" if cols is None else cols
+        cols_sel = "*" if cols is None else cols
 
-        return self.__conn.sql(f"SELECT {cols} FROM {obj_type}")
+        return self.__conn.sql(f"SELECT {cols_sel} FROM {obj_type}")
 
     @property
-    def s3_obj_types(self) -> str:
+    def s3_obj_types(self) -> list[str]:
         objs = [
             "works",
             "authors",
