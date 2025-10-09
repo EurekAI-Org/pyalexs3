@@ -1,1 +1,1 @@
-# OASIS - (OpenAlex S3 Ingest Service)
+# PyAlexS3 - (OpenAlex S3 Processor)

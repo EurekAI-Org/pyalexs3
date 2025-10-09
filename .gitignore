@@ -12,3 +12,4 @@ wheels/
 **/.vscode
 **/*.db
 **/.cache
+**/.pytest_cache
