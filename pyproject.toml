@@ -32,6 +32,9 @@ dev = [
     "pytest",
     "pytest-cov",
     "moto[s3]>=5",
+    "ruff",
+    "mypy",
+    "black>=24.4.2",
 ]
 
 
@@ -57,3 +60,33 @@ include = ["src", "README.md", "LICENSE", "tests"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.black]
+line-length = 88
+target-version = ["py310", "py311", "py312"]
+extend-exclude = [
+  "/build/",
+  "/dist/",
+  "^\\.venv/",
+  "^\\.mypy_cache/",
+  "^\\.pytest_cache/",
+]
+
+
+[tool.ruff]
+line-length = 88
+# Ruff is lint-only (Black handles formatting)
+lint.select = ["E","F","W","I","UP","B","SIM","C4","PIE","RUF"]
+lint.ignore = [
+  "E501",  # Black handles line length
+]
+# optional: tell ruff where your source is
+src = ["src", "tests"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+pretty = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+exclude = '(build|dist|\.venv|\.mypy_cache|\.pytest_cache)'
