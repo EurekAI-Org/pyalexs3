@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import glob
 import os
 import re
 import shutil
@@ -26,7 +27,17 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
-from .schemas import WORKS_SCHEMA
+from .schemas import (
+    AUTHORS_SCHEMA,
+    CONCEPT_SCHEMA,
+    FUNDER_SCHEMA,
+    INSTITUION_SCHEMA,
+    KEYWORD_SCHEMA,
+    PUBLISHER_SCHEMA,
+    SOURCE_SCHEMA,
+    TOPIC_SCHEMA,
+    WORKS_SCHEMA,
+)
 
 done_event = Event()
 
@@ -90,8 +101,31 @@ class OpenAlexS3Processor:
         )
 
     def __get_schema(self, obj_type: str) -> dict:
-        if obj_type == "works":
-            return WORKS_SCHEMA
+        accepted_types = [
+            "works",
+            "authors",
+            "sources",
+            "institutions",
+            "topics",
+            "keywords",
+            "publishers",
+            "funders",
+            "concepts",
+        ]
+        schemas = {
+            "works": WORKS_SCHEMA,
+            "authors": AUTHORS_SCHEMA,
+            "sources": SOURCE_SCHEMA,
+            "institutions": INSTITUION_SCHEMA,
+            "topics": TOPIC_SCHEMA,
+            "keywords": KEYWORD_SCHEMA,
+            "publishers": PUBLISHER_SCHEMA,
+            "funders": FUNDER_SCHEMA,
+            "concepts": CONCEPT_SCHEMA,
+        }
+
+        if obj_type in accepted_types:
+            return schemas[obj_type]
 
         raise ValueError(f"Unsupported obj_type: {obj_type!r}")
 
@@ -283,7 +317,7 @@ class OpenAlexS3Processor:
             "keywords",
             "publishers",
             "funders",
-            "geo",
+            "concepts",
         ]
 
         assert (
@@ -422,6 +456,7 @@ class OpenAlexS3Processor:
             parts=parts_sel,
             download_dir=download_dir,
         )
+        dwnld_files = glob.glob(download_dir + "/*.gz")
 
         rprint("[yellow]Creating table...")
 
@@ -449,11 +484,15 @@ class OpenAlexS3Processor:
                 {select_clause}
                 """
 
-        self.__conn.execute(sql_query)
+        if len(dwnld_files):
+            self.__conn.execute(sql_query)
+            rprint(f"[green]Table creation complete in {time.time() - t0:.3f} secs")
+        else:
+            rprint(
+                f"[red]Could not find any files on S3 for {obj_type} between {start_date_sel} - {end_date_sel}"
+            )
 
         shutil.rmtree(download_dir)
-
-        rprint(f"[green]Table creation complete in {time.time() - t0:.3f} secs")
 
     def batch_load_table(
         self,
@@ -546,6 +585,7 @@ class OpenAlexS3Processor:
                 parts=parts_sel,
                 download_dir=download_dir,
             )
+            dwnld_files = glob.glob(download_dir + "/*.gz")
 
             if table_exists:
                 sql_query = f"INSERT INTO {obj_type} {select_clause}"
@@ -560,11 +600,17 @@ class OpenAlexS3Processor:
                     CREATE TABLE {obj_type} AS
                     {select_clause}
                     """
+            if len(dwnld_files):
+                self.__conn.execute(sql_query)
+                rprint(
+                    f"[bold green] Table loading complete in {time.time() - t0:.4f} secs"
+                )
+            else:
+                rprint(
+                    f"[red]Could not find any files on S3 for {obj_type} between {start_date_sel} - {end_date_sel}"
+                )
 
-            self.__conn.execute(sql_query)
             shutil.rmtree(download_dir)
-
-        rprint(f"[bold green] Table loading complete in {time.time() - t0:.4f} secs")
 
     def lazy_load(
         self,
