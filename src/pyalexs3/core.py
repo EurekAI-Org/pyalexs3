@@ -56,7 +56,7 @@ class OpenAlexS3Processor:
     Flow:
       1) List S3 keys for an object type, filter by date (and optional parts).
       2) Download in parallel with Rich progress bars.
-      3) Load with DuckDB `read_ndjson_auto(...)` using a known schema.
+      3) Load with DuckDB `read_json(...)` using a known schema.
       4) Create or append to a DuckDB table, then clean up temp files.
 
     Side Effects:
@@ -86,6 +86,7 @@ class OpenAlexS3Processor:
 
         self.__conn.execute("INSTALL httpfs; LOAD httpfs;")
         self.__conn.execute("PRAGMA enable_progress_bar=true;")
+        self.__conn.execute("PRAGMA enable_object_cache=true;")
         self.__conn.execute(f"PRAGMA threads={self.__n_workers};")
 
         self.__progress = Progress(
@@ -100,7 +101,14 @@ class OpenAlexS3Processor:
             TimeRemainingColumn(),
         )
 
-    def __get_schema(self, obj_type: str) -> dict:
+    def __get_sub_schema(self, schema: dict, cols: str) -> dict:
+        new_schema = {}
+        for col in cols.split(","):
+            new_schema[col] = schema[col]
+
+        return new_schema
+
+    def __get_schema(self, obj_type: str, cols: str) -> dict:
         accepted_types = [
             "works",
             "authors",
@@ -125,7 +133,11 @@ class OpenAlexS3Processor:
         }
 
         if obj_type in accepted_types:
-            return schemas[obj_type]
+            return (
+                schemas[obj_type]
+                if cols == "*"
+                else self.__get_sub_schema(schema=schemas[obj_type], cols=cols)
+            )
 
         raise ValueError(f"Unsupported obj_type: {obj_type!r}")
 
@@ -462,7 +474,7 @@ class OpenAlexS3Processor:
 
         t0 = time.time()
 
-        select_clause = f"SELECT {cols_sel} FROM read_ndjson_auto('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type)}){where_sel}{limit_sel}"
+        select_clause = f"SELECT {cols_sel} FROM read_json('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type, cols=cols_sel)}, format='newline_delimited', hive_partitioning=true){where_sel}{limit_sel}"
 
         exists_cmd = self.__conn.execute(
             f"SELECT count(*) FROM duckdb_tables() WHERE table_name='{obj_type}'"
@@ -569,7 +581,7 @@ class OpenAlexS3Processor:
         )
 
         t0 = time.time()
-        select_clause = f"SELECT {cols_sel} FROM read_ndjson_auto('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type)}){where_sel}{limit_sel}"
+        select_clause = f"SELECT {cols_sel} FROM read_json('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type, cols=cols_sel)}, format='newline_delimited', hive_partitioning=true){where_sel}{limit_sel}"
 
         for file_ls in files_gen:
 
@@ -691,7 +703,7 @@ class OpenAlexS3Processor:
             end_date=end_date_sel,
         )
 
-        select_clause = f"SELECT {cols_sel} FROM read_ndjson_auto('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type)}){where_sel}{limit_sel}"
+        select_clause = f"SELECT {cols_sel} FROM read_json('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type, cols=cols_sel)}, format='newline_delimited', hive_partitioning=true){where_sel}{limit_sel}"
 
         for fb in files_gen:
             os.makedirs(download_dir, exist_ok=True)
