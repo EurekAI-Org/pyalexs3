@@ -220,3 +220,75 @@ def test_lazy_load_yields_batches_sel_col(tmp_path, monkeypatch):
 
     # lazy_load should clean up the temp dir after each yield; after loop it shouldn't remain
     assert not Path(tmp_path).exists() or not any(Path(tmp_path).glob("*"))
+
+
+@mock_aws
+def test_lazy_load_yields_batches_part_resumed(tmp_path, monkeypatch):
+    # Minimal schema
+    monkeypatch.setattr(
+        core_mod, "WORKS_SCHEMA", {"id": "VARCHAR", "title": "VARCHAR"}, raising=False
+    )
+
+    # Fake S3 + bucket
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket="openalex")
+
+    # Force library to use THIS client
+    monkeypatch.setattr(core_mod.boto3, "client", lambda *a, **k: s3, raising=True)
+
+    _put_gz_ndjson(
+        s3,
+        "openalex",
+        "data/works/updated_date=2025-07-06/part_000.gz",
+        [{"id": "W10", "title": "A"}, {"id": "W11", "title": "B"}],
+    )
+    _put_gz_ndjson(
+        s3,
+        "openalex",
+        "data/works/updated_date=2025-07-06/part_001.gz",
+        [{"id": "W12", "title": "C"}],
+    )
+    _put_gz_ndjson(
+        s3,
+        "openalex",
+        "data/works/updated_date=2025-07-06/part_002.gz",
+        [{"id": "W13", "title": "D"}],
+    )
+
+    _put_gz_ndjson(
+        s3,
+        "openalex",
+        "data/works/updated_date=2025-07-06/part_003.gz",
+        [{"id": "W14", "title": "KL"}],
+    )
+
+    _put_gz_ndjson(
+        s3,
+        "openalex",
+        "data/works/updated_date=2025-07-06/part_004.gz",
+        [{"id": "W15", "title": "TT"}],
+    )
+
+    p = OpenAlexS3Processor()
+
+    batch_sizes = []
+    titles = []
+
+    for rel in p.lazy_load(
+        obj_type="works",
+        batch_sz=1,  # each part becomes a batch
+        cols=["id", "title"],
+        start_date="2025-07-06",
+        end_date="2025-07-06",
+        download_dir=str(tmp_path),
+        start_from="2025-07-06/2",
+    ):
+        df = rel.df()  # materialize this batch
+        batch_sizes.append(len(df))
+        titles.extend(df["title"].tolist())
+
+    assert batch_sizes == [1, 1, 1]
+    assert set(titles) == {"D", "KL", "TT"}
+
+    # lazy_load should clean up the temp dir after each yield; after loop it shouldn't remain
+    assert not Path(tmp_path).exists() or not any(Path(tmp_path).glob("*"))

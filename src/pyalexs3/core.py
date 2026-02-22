@@ -169,6 +169,19 @@ class OpenAlexS3Processor:
         except ValueError:
             return False
 
+    def __is_valid_start_from(self, txt: str) -> bool:
+        try:
+            date_str, part_str = txt.split("/", 1)
+            datetime.date.fromisoformat(date_str)
+            if not part_str.isdigit():
+                raise ValueError
+
+            return True
+        except Exception as err:
+            raise ValueError(
+                "Expected start_from to be of the following format: YYYY-mm-dd/<digit>"
+            ) from err
+
     def __get_files(self, obj_type: str, start_date: str, end_date: str) -> list[str]:
         file_list = []
         st = datetime.date.fromisoformat(start_date)
@@ -214,6 +227,26 @@ class OpenAlexS3Processor:
         if len(file_list):
             yield file_list
 
+    def __start_files_from(
+        self, file_batch: list[str], start_date: str, start_part_from: int
+    ) -> list[str]:
+        file_list: list[str] = []
+
+        st = datetime.date.fromisoformat(start_date)
+        for ff in file_batch:
+            part_val = int(ff.split("/")[-1].replace("part_", "").replace(".gz", ""))
+            part_date = self.__extract_date(ff)
+
+            if datetime.date.fromisoformat(part_date) == st:
+                if part_val >= start_part_from:
+                    file_list.append(ff)
+            elif datetime.date.fromisoformat(part_date) > st:
+                file_list.append(ff)
+            else:
+                continue
+
+        return file_list
+
     def __copy_data(self, taskId: TaskID, key: str, download_dir: str):
 
         def update_progress(bytes_amt: float):
@@ -232,15 +265,10 @@ class OpenAlexS3Processor:
 
     def __download_files(
         self,
-        obj_type: str,
-        start_date: str,
-        end_date: str,
+        files: list[str],
         parts: str | list[int],
         download_dir: str,
     ):
-        files = self.__get_files(
-            obj_type=obj_type, start_date=start_date, end_date=end_date
-        )
 
         if parts != "*":
             files = [
@@ -315,6 +343,8 @@ class OpenAlexS3Processor:
         limit: int | None = None,
         batch_sz: int | None = None,
         where_clause: str | None = None,
+        resume_part_from: int | None = None,
+        resume_from: str | None = None,
     ):
         assert isinstance(
             obj_type, str
@@ -394,6 +424,18 @@ class OpenAlexS3Processor:
             raise ValueError(
                 f"start_date cannot be greater than end_date. Found start_date={start_date}, end_date={end_date}"
             )
+        if resume_part_from is not None and not isinstance(resume_part_from, int):
+            raise ValueError(
+                f"Expected resume_part_from to be of type 'int'. Found type {type(resume_part_from)}"
+            )
+
+        if resume_from is not None and not isinstance(resume_from, str):
+            raise ValueError(
+                f"Expected resume_from to be of type 'str'. Found type {type(resume_from)}"
+            )
+
+        if resume_from is not None:
+            self.__is_valid_start_from(resume_from)
 
     def load_table(
         self,
@@ -405,6 +447,7 @@ class OpenAlexS3Processor:
         parts: list[int] | None = None,
         download_dir: str = "./.cache/oa",
         where_clause: str | None = None,
+        start_from: str | None = None,
     ):
         """
         Loads all the *.gz files in OpenAlex S3 directories as one complete table.
@@ -434,6 +477,9 @@ class OpenAlexS3Processor:
 
         where_clause: Optional[str] = None
             A SQL-like where clause to filter out the necessary table.
+
+        start_from: Optional[str] = None
+            Date & part number from which to start the download. Format (YYYY-mm-dd/<part_number>)
         """
         self.__type_check(
             obj_type=obj_type,
@@ -444,6 +490,7 @@ class OpenAlexS3Processor:
             cols=cols,
             limit=limit,
             where_clause=where_clause,
+            resume_from=start_from,
         )
 
         os.makedirs(download_dir, exist_ok=True)
@@ -459,12 +506,23 @@ class OpenAlexS3Processor:
         limit_sel = f" LIMIT {limit}" if limit is not None else ""
         where_sel = f" {where_clause.strip()}" if where_clause is not None else ""
 
+        if start_from is not None:
+            start_date_sel = start_from.split("/")[0]
+
+        files = self.__get_files(
+            obj_type=obj_type, start_date=start_date_sel, end_date=end_date_sel
+        )
+        if start_from is not None:
+            files = self.__start_files_from(
+                file_batch=files,
+                start_date=start_date_sel,
+                start_part_from=int(start_from.split("/")[-1]),
+            )
+
         rprint("Downloading the files from s3...")
 
         self.__download_files(
-            obj_type=obj_type,
-            start_date=start_date_sel,
-            end_date=end_date_sel,
+            files=files,
             parts=parts_sel,
             download_dir=download_dir,
         )
@@ -473,6 +531,7 @@ class OpenAlexS3Processor:
         rprint("[yellow]Creating table...")
 
         t0 = time.time()
+        table_exists = False
 
         select_clause = f"SELECT {cols_sel} FROM read_json('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type, cols=cols_sel)}, format='newline_delimited', hive_partitioning=true){where_sel}{limit_sel}"
 
@@ -517,6 +576,7 @@ class OpenAlexS3Processor:
         parts: list[int] | None = None,
         download_dir: str = "./.cache/oa",
         where_clause: str | None = None,
+        start_from: str | None = None,
     ):
         """
         Loads all the *.gz files in OpenAlex S3 directories in batches and appends to one complete table.
@@ -549,6 +609,9 @@ class OpenAlexS3Processor:
 
         where_clause: Optional[str] = None
             A SQL-like where clause to filter out the necessary table.
+
+        start_from: Optional[str] = None
+            Date & part from which to start downloading. Format (YYYY-mm-dd/<part_number>)
         """
         self.__type_check(
             obj_type=obj_type,
@@ -560,6 +623,7 @@ class OpenAlexS3Processor:
             limit=limit,
             batch_sz=batch_sz,
             where_clause=where_clause,
+            resume_from=start_from,
         )
 
         parts_sel = "*" if parts is None else parts
@@ -580,11 +644,15 @@ class OpenAlexS3Processor:
             end_date=end_date_sel,
         )
 
+        if start_from is not None:
+            start_date_sel = start_from.split("/")[0]
+
         t0 = time.time()
         select_clause = f"SELECT {cols_sel} FROM read_json('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type, cols=cols_sel)}, format='newline_delimited', hive_partitioning=true){where_sel}{limit_sel}"
 
         for file_ls in files_gen:
 
+            table_exists = False
             exists_cmd = self.__conn.execute(
                 f"SELECT count(*) FROM duckdb_tables() WHERE table_name='{obj_type}'"
             ).fetchone()
@@ -592,8 +660,16 @@ class OpenAlexS3Processor:
                 table_exists = exists_cmd[0] > 0
 
             os.makedirs(download_dir, exist_ok=True)
+
+            new_file_ls = file_ls
+            if start_from is not None:
+                new_file_ls = self.__start_files_from(
+                    file_batch=file_ls,
+                    start_date=start_date_sel,
+                    start_part_from=int(start_from.split("/")[-1]),
+                )
             self.__batch_download_files(
-                files=file_ls,
+                files=new_file_ls,
                 parts=parts_sel,
                 download_dir=download_dir,
             )
@@ -635,6 +711,7 @@ class OpenAlexS3Processor:
         end_date: str | None = None,
         parts: list[int] | None = None,
         download_dir: str = "./.cache/oa",
+        start_from: str | None = None,
     ) -> Generator[duckdb.DuckDBPyRelation, None, None]:
         """
         Lazy Loads all the *.gz files in OpenAlex S3 directories in batches.
@@ -668,6 +745,11 @@ class OpenAlexS3Processor:
         where_clause: Optional[str] = None
             A SQL-like where clause to filter out the necessary table.
 
+
+
+        start_from: Optional[str] = None
+            Date & part number from which to start the download. Format (YYYY-mm-dd/<part_number>)
+
         Returns:
         --------
         A DuckDBPyRelation object
@@ -683,6 +765,7 @@ class OpenAlexS3Processor:
             limit=limit,
             batch_sz=batch_sz,
             where_clause=where_clause,
+            resume_from=start_from,
         )
 
         parts_sel = "*" if parts is None else parts
@@ -696,6 +779,9 @@ class OpenAlexS3Processor:
         limit_sel = f" LIMIT {limit}" if limit is not None else ""
         where_sel = f" {where_clause.strip()}" if where_clause is not None else ""
 
+        if start_from is not None:
+            start_date_sel = start_from.split("/")[0]
+
         files_gen = self.__get_batch_files(
             obj_type=obj_type,
             batch_sz=batch_sz,
@@ -707,9 +793,20 @@ class OpenAlexS3Processor:
 
         for fb in files_gen:
             os.makedirs(download_dir, exist_ok=True)
+            if start_from is not None:
+                new_fb = self.__start_files_from(
+                    fb,
+                    start_date=start_date_sel,
+                    start_part_from=int(start_from.split("/")[-1]),
+                )
+            else:
+                new_fb = fb
+
+            if not len(new_fb):
+                continue
 
             self.__batch_download_files(
-                files=fb,
+                files=new_fb,
                 parts=parts_sel,
                 download_dir=download_dir,
             )
