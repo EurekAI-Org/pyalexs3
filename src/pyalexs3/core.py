@@ -504,7 +504,7 @@ class OpenAlexS3Processor:
         )
         cols_sel = "*" if cols is None else ",".join(cols)
         limit_sel = f" LIMIT {limit}" if limit is not None else ""
-        where_sel = f" {where_clause.strip()}" if where_clause is not None else ""
+        where_sel = f" WHERE {where_clause.strip()}" if where_clause is not None else ""
 
         if start_from is not None:
             start_date_sel = start_from.split("/")[0]
@@ -533,7 +533,7 @@ class OpenAlexS3Processor:
         t0 = time.time()
         table_exists = False
 
-        select_clause = f"SELECT {cols_sel} FROM read_json('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type, cols=cols_sel)}, format='newline_delimited', hive_partitioning=true){where_sel}{limit_sel}"
+        select_clause = f"SELECT {cols_sel} FROM read_json_auto('{download_dir}/*'){where_sel}{limit_sel}"
 
         exists_cmd = self.__conn.execute(
             f"SELECT count(*) FROM duckdb_tables() WHERE table_name='{obj_type}'"
@@ -542,7 +542,7 @@ class OpenAlexS3Processor:
             table_exists = exists_cmd[0] > 0
 
         if table_exists:
-            sql_query = f"INSERT INTO {obj_type} {select_clause}"
+            sql_query = f"INSERT INTO {obj_type} {select_clause};"
         else:
             if self.__persist_path is None:
                 sql_query = f"""
@@ -635,7 +635,7 @@ class OpenAlexS3Processor:
         )
         cols_sel = "*" if cols is None else ",".join(cols)
         limit_sel = f" LIMIT {limit}" if limit is not None else ""
-        where_sel = f" {where_clause.strip()}" if where_clause is not None else ""
+        where_sel = f" WHERE {where_clause.strip()}" if where_clause is not None else ""
 
         files_gen = self.__get_batch_files(
             obj_type=obj_type,
@@ -648,7 +648,7 @@ class OpenAlexS3Processor:
             start_date_sel = start_from.split("/")[0]
 
         t0 = time.time()
-        select_clause = f"SELECT {cols_sel} FROM read_json('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type, cols=cols_sel)}, format='newline_delimited', hive_partitioning=true){where_sel}{limit_sel}"
+        select_clause = f"SELECT {cols_sel} FROM read_json_auto('{download_dir}/*'){where_sel}{limit_sel}"
 
         for file_ls in files_gen:
 
@@ -777,7 +777,7 @@ class OpenAlexS3Processor:
         )
         cols_sel = "*" if cols is None else ",".join(cols)
         limit_sel = f" LIMIT {limit}" if limit is not None else ""
-        where_sel = f" {where_clause.strip()}" if where_clause is not None else ""
+        where_sel = f" WHERE {where_clause.strip()}" if where_clause is not None else ""
 
         if start_from is not None:
             start_date_sel = start_from.split("/")[0]
@@ -789,7 +789,7 @@ class OpenAlexS3Processor:
             end_date=end_date_sel,
         )
 
-        select_clause = f"SELECT {cols_sel} FROM read_json('{download_dir}/*', columns={self.__get_schema(obj_type=obj_type, cols=cols_sel)}, format='newline_delimited', hive_partitioning=true){where_sel}{limit_sel}"
+        select_clause = f"SELECT {cols_sel} FROM read_json_auto('{download_dir}/*'){where_sel}{limit_sel}"
 
         for fb in files_gen:
             os.makedirs(download_dir, exist_ok=True)
