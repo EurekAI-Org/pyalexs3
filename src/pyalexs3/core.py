@@ -533,7 +533,7 @@ class OpenAlexS3Processor:
         t0 = time.time()
         table_exists = False
 
-        select_clause = f"SELECT {cols_sel} FROM read_json_auto('{download_dir}/*'){where_sel}{limit_sel}"
+        select_clause = f"SELECT {cols_sel} FROM read_json_auto('{download_dir}/*', ignore_errors=true){where_sel}{limit_sel}"
 
         exists_cmd = self.__conn.execute(
             f"SELECT count(*) FROM duckdb_tables() WHERE table_name='{obj_type}'"
@@ -648,7 +648,7 @@ class OpenAlexS3Processor:
             start_date_sel = start_from.split("/")[0]
 
         t0 = time.time()
-        select_clause = f"SELECT {cols_sel} FROM read_json_auto('{download_dir}/*'){where_sel}{limit_sel}"
+        select_clause = f"SELECT {cols_sel} FROM read_json_auto('{download_dir}/*', ignore_errors=true){where_sel}{limit_sel}"
 
         for file_ls in files_gen:
 
@@ -789,7 +789,7 @@ class OpenAlexS3Processor:
             end_date=end_date_sel,
         )
 
-        select_clause = f"SELECT {cols_sel} FROM read_json_auto('{download_dir}/*'){where_sel}{limit_sel}"
+        select_clause = f"SELECT {cols_sel} FROM read_json_auto('{download_dir}/*', ignore_errors=true){where_sel}{limit_sel}"
 
         for fb in files_gen:
             os.makedirs(download_dir, exist_ok=True)
