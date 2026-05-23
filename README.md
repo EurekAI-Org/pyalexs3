@@ -1,173 +1,178 @@
 # pyAlexS3
 
-OpenAlex S3 → DuckDB loader with nice progress bars (powered by `rich`).
-It lists, filters, downloads (in parallel), and loads OpenAlex NDJSON dumps into DuckDB—either all at once, in batches, or lazily as an iterator.
+OpenAlex S3 → DuckDB loader powered by `rich` progress bars.
 
-# Features
+Reads OpenAlex NDJSON dumps directly from S3 via DuckDB's `httpfs` extension — no downloading required.
 
-- 🚀 Parallel S3 downloads with a live progress bar
+## Features
 
-- 🦆 Zero-setup DuckDB loading via read_ndjson_auto(...)
+- 🚀 Direct S3 reads via DuckDB `httpfs` — no local downloads
+- 🦆 Zero-setup DuckDB loading via `read_json_auto(...)`
+- 🎯 Filter by date range (`YYYY-MM-DD`) and by part numbers
+- 🔁 Resume from a specific date and part after a failure
+- 🔎 Optional SQL-style `WHERE` predicate
+- 📊 Optional `rich` progress bar showing batch progress
 
-- 🧩 Three loading modes:
+## Installation
 
-    - load_table: one-shot into a DuckDB table
-
-    - batch_load_table: append in batches
-
-    - lazy_load: yield a DuckDB relation per batch (no table needed)
-
-- 🎯 Filter by date range (YYYY-MM-DD) and by part numbers
-
-- 🔎 Optional SQL-style WHERE predicate
-
-- 💾 Persistent or in-memory DuckDB
-
-# Installation
 ```bash
 pip install pyalexs3
 ```
-or with uv
+
+or with uv:
+
 ```bash
 uv add pyalexs3
 ```
 
 Python **3.10+** is required.
 
-# Quick start
+## Quick Start
+
 ```python
 from pyalexs3.core import OpenAlexS3Processor
 
 p = OpenAlexS3Processor(n_workers=4)
-p.load_table(
+
+for file_batch, rel in p.lazy_load(
     obj_type="works",
-    start_date="2025-07-05",
-    end_date="2025-07-20",
-    download_dir="./.cache/oa",
-    cols=["id", "title"]
-)
-
-table = p.get_table("works")
-table.limit(5).show()
-```
-
-# Filter with WHERE clause
-```python
-p.load_table(
-    obj_type="works",
-    start_date="2025-07-05",
-    end_date="2025-07-20",
-    download_dir="./.cache/oa",
-    cols=["id", "title", "type"],
-    where_clause="WHERE title IS NOT NULL AND type='article'"
-)
-```
-
-# Batching and lazy load
-## Append in batches
-```python
-p.batch_load_table(
-    obj_type="works",
-    batch_sz=5,  # ~number of S3 objects per batch
-    start_date="2025-07-01",
-    end_date="2025-07-02",
-    cols=["id", "title"],
-    download_dir="./.cache/oa",
-)
-
-# Everything lands in the same DuckDB table:
-p.get_table("works").count("*").show()
-```
-
-## Iterate lazily (no table required)
-```python
-titles = []
-for rel in p.lazy_load(
-    obj_type="works",
-    batch_sz=5,
-    start_date="2025-07-01",
-    end_date="2025-07-02",
-    cols=["id", "title"],
-    download_dir="./.cache/oa",
+    start_date="2025-01-01",
+    end_date="2025-03-01",
+    columns=["id", "title", "publication_year"],
 ):
-    df = rel.df()  # materialize this batch
-    titles.extend(df["title"].tolist())
+    df = rel.df()
+    print(df.head())
 ```
 
-# API
+## Filter with WHERE clause
 
-`OpenAlexS3Processor(n_workers: int = 4, persist_path: str | None = None)`
- - `n_workers`: number of threads for downloads.
-- `persist_path`: if set, uses a persistent DuckDB database file at this path; otherwise an in-memory DB.
+```python
+for file_batch, rel in p.lazy_load(
+    obj_type="works",
+    start_date="2025-01-01",
+    end_date="2025-03-01",
+    columns=["id", "title", "publication_year"],
+    where_clause="title IS NOT NULL AND language='en'",
+):
+    df = rel.df()
+```
 
-- `load_table(...) -> None`
-        Downloads all matching files and creates/appends a DuckDB table named after `obj_type`.
+## Resume After Failure
 
-        Args:
-        - `obj_type`: one of `{"works","authors","sources","institutions","topics","keywords","publishers","funders","geo"}`
-        - `cols`: `list[str]` of columns to select (default `*`)
-        - `limit`: `int | None` (applied after read)
-        - `start_date`, `end_date`: ISO "YYYY-MM-DD" strings (inclusive). If `start_date` is None, it’s inferred from S3; if `end_date` is None, defaults to today.
-        - `parts`: `list[int] | None` — specific part numbers (e.g., [0,2]). None = all.
-        - `download_dir`: temporary folder for gz files (deleted after load)
-        - `where_clause`: SQL predicate like "WHERE title IS NOT NULL"
+If your pipeline fails midway, resume from a specific date and part number:
 
-- `batch_load_table(...) -> None`
-        Same args as `load_table`, plus:
-            - `batch_sz`: approx. number of S3 objects per batch. Each batch is read and inserted (or CREATE on the first), then temp files are deleted.
-- `lazy_load(...) -> Iterator[duckdb.DuckDBPyRelation]`
-        Yields one `Relation` per batch. You can `.show()`, `.df()`, or run more SQL. Temp files are removed after each yield.
+```python
+for file_batch, rel in p.lazy_load(
+    obj_type="works",
+    start_date="2025-01-01",
+    end_date="2025-03-01",
+    resume_from="2025-01-15/5",  # skip everything before 2025-01-15 part 5
+):
+    df = rel.df()
+```
 
-- `get_table(obj_type: str, cols: list[str] | None = None)` -> duckdb.DuckDBPyRelation
-        Convenience accessor to query the created table.
-- `s3_obj_types -> list[str]`
-        Returns supported OpenAlex object types.
+## Load Specific Parts Only
 
+```python
+for file_batch, rel in p.lazy_load(
+    obj_type="works",
+    start_date="2025-01-01",
+    end_date="2025-01-01",
+    parts=[0, 1, 2],  # only load part_000.gz, part_001.gz, part_002.gz
+):
+    df = rel.df()
+```
 
-# Behavior & notes
+## Show Progress
 
-- Progress bars: Per-file totals (from head_object) with per-chunk callbacks.
+```python
+p = OpenAlexS3Processor(n_workers=4, show_progress=True)
 
-- Threading: Downloads via ThreadPoolExecutor; exceptions bubble up when futures complete.
+for file_batch, rel in p.lazy_load(obj_type="works"):
+    df = rel.df()
+```
 
-- DuckDB: Installs/loads httpfs automatically; sets PRAGMA threads to n_workers.
+## Track Which Files Were Processed
 
-- Cleanup: download_dir is removed at the end of load_table / each batch in batch_load_table / after each yield in lazy_load.
+Each `lazy_load` iteration yields both the file batch and the relation:
 
-# Testing
-Dev dependencies include `pytest` and `moto[s3]` to mock S3.
+```python
+for file_batch, rel in p.lazy_load(obj_type="works"):
+    print(f"Processing: {file_batch}")  # list of S3 keys in this batch
+    df = rel.df()
+```
+
+## API
+
+### `OpenAlexS3Processor(n_workers=4, **kwargs)`
+
+| Parameter              | Type   | Default | Description                         |
+| ---------------------- | ------ | ------- | ----------------------------------- |
+| `n_workers`            | `int`  | `4`     | DuckDB thread count                 |
+| `show_progress`        | `bool` | `False` | Show rich progress bar              |
+| `pragma_show_progress` | `bool` | `False` | Enable DuckDB internal progress bar |
+
+### `lazy_load(...) -> Generator[tuple[list[str], DuckDBPyRelation], None, None]`
+
+| Parameter      | Type                | Default      | Description                                         |
+| -------------- | ------------------- | ------------ | --------------------------------------------------- |
+| `obj_type`     | `str`               | required     | OpenAlex object type e.g. `works`, `authors`        |
+| `columns`      | `list[str] \| None` | `None`       | Columns to select. `None` = all                     |
+| `limit`        | `int \| None`       | `None`       | Max records per batch                               |
+| `start_date`   | `str \| None`       | `2016-06-24` | Start of date range `YYYY-mm-dd` (inclusive)        |
+| `end_date`     | `str \| None`       | today        | End of date range `YYYY-mm-dd` (inclusive)          |
+| `parts`        | `list[int] \| None` | `None`       | Specific part numbers to load. `None` = all         |
+| `where_clause` | `str \| None`       | `None`       | SQL filter. Do not include `WHERE` keyword          |
+| `resume_from`  | `str \| None`       | `None`       | Resume from `YYYY-mm-dd/<part>` e.g. `2025-01-15/5` |
+| `batch_size`   | `int`               | `10`         | Number of S3 files per batch                        |
+
+Yields `tuple[list[str], duckdb.DuckDBPyRelation]`:
+
+- `list[str]` — S3 keys in this batch (useful for progress tracking)
+- `DuckDBPyRelation` — query the batch with `.df()`, `.arrow()`, `.fetchall()`
+
+### Supported Object Types
+
+`works`, `authors`, `sources`, `institutions`, `topics`, `keywords`, `publishers`, `funders`, `concepts`
+
+## Behavior & Notes
+
+- **No downloads** — data is read directly from S3 via DuckDB `httpfs`. No temp files, no cleanup needed.
+- **DuckDB** — installs and loads `httpfs` automatically on init. Sets `PRAGMA threads` to `n_workers`.
+- **Object cache** — `PRAGMA enable_object_cache=true` is set by default for repeated queries on the same files.
+- **S3 auth** — OpenAlex S3 is public. No credentials needed.
+
+## Testing
+
+Dev dependencies include `pytest`.
 
 ```bash
-# with uv
 uv sync --extra dev
 uv run pytest -q
 ```
 
-Example end-to-end tests:
+Tests mock the S3 client directly using `unittest.mock` to test the file listing and filtering logic without hitting real S3.
 
-- Mock S3 with `moto`, upload gzipped NDJSON to `openalex` bucket keys,
+## Development
 
-- Patch `WORKS_SCHEMA` to a minimal schema for fast runs,
+- Source layout: `src/pyalexs3/`
+- Typed package marker: `src/pyalexs3/py.typed`
 
-- Run `load_table`, `batch_load_table`, and `lazy_load`, then assert results.
+## License
 
-# Development
-
-- Source layout: src/pyalexs3/
-
-- Typed package marker: src/pyalexs3/py.typed
-
-# License
 MIT © EurekAI
 
-# Citation
-If you are using this for research purpose please use this bibTex for citation:
-```
+## Citation
+
+If you are using this for research purposes please use this BibTeX for citation:
+
+```bibtex
 @misc{pyalexs32025,
-	author = {Adityam Ghosh},
-	title = {pyalexs3},
-	howpublished = {\url{https://github.com/EurekAI-Org/pyalexs3}},
-	year = {2025},
-	note = {[Accessed 09-10-2025]},
+    author = {Adityam Ghosh},
+    title = {pyalexs3},
+    howpublished = {\url{https://github.com/EurekAI-Org/pyalexs3}},
+    year = {2025},
+    note = {[Accessed 09-10-2025]},
 }
 ```
+
