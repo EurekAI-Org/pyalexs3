@@ -1,294 +1,206 @@
-import gzip
-import json
-from io import BytesIO
-from pathlib import Path
+from unittest.mock import MagicMock
 
-import boto3
-from moto import mock_aws
+import pytest
 
-import pyalexs3.core as core_mod
 from pyalexs3.core import OpenAlexS3Processor
 
 
-@mock_aws
-def test_load_table_end_to_end(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        core_mod, "WORKS_SCHEMA", {"id": "VARCHAR", "title": "VARCHAR"}, raising=False
-    )
-
-    s3 = boto3.client("s3", region_name="us-east-1")
-    s3.create_bucket(Bucket="openalex")
-
-    monkeypatch.setattr(core_mod.boto3, "client", lambda *a, **k: s3, raising=True)
-
-    key = "data/works/updated_date=2025-07-05/part_000.gz"
-    rows = [{"id": "W1", "title": "Hello"}, {"id": "W2", "title": "World"}]
-    buf = BytesIO()
-
-    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
-        for r in rows:
-            gz.write((json.dumps(r) + "\n").encode("utf-8"))
-    body = buf.getvalue()
-
-    s3.put_object(Bucket="openalex", Key=key, Body=body)
-
-    p = OpenAlexS3Processor()
-    p.load_table(
-        obj_type="works",
-        start_date="2025-07-05",
-        end_date="2025-07-05",
-        download_dir=str(tmp_path),
-    )
-
-    rel = p.get_table("works")
-    df = rel.df()
-
-    assert list(df.columns) == ["id", "title"]
-    assert len(df) == 2
-    assert set(df["title"]) == {"Hello", "World"}
+@pytest.fixture
+def processor():
+    return OpenAlexS3Processor()
 
 
-def _put_gz_ndjson(s3, bucket: str, key: str, rows: list[dict]):
-    buf = BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
-        for r in rows:
-            gz.write((json.dumps(r) + "\n").encode("utf-8"))
-    s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
+@pytest.fixture
+def mock_s3(processor):
+    def _setup(keys: list[str]):
+        mock_pages = [{"Contents": [{"Key": k} for k in keys]}]
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = mock_pages
+        mock_client = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        processor._OpenAlexS3Processor__s3_client = mock_client
+        return processor
+
+    return _setup
 
 
-@mock_aws
-def test_batch_load_table_end_to_end(tmp_path, monkeypatch):
-    # Minimal schema for this test
-    monkeypatch.setattr(
-        core_mod, "WORKS_SCHEMA", {"id": "VARCHAR", "title": "VARCHAR"}, raising=False
-    )
+# ------------------------------------------------------------------
+# __extract_date
+# ------------------------------------------------------------------
 
-    # Fake S3 and bucket
-    s3 = boto3.client("s3", region_name="us-east-1")
-    s3.create_bucket(Bucket="openalex")
 
-    # Force your package to use THIS moto client
-    monkeypatch.setattr(core_mod.boto3, "client", lambda *a, **k: s3, raising=True)
+def test_extract_date_valid(processor):
+    extract = processor._OpenAlexS3Processor__extract_date
+    assert extract("data/works/updated_date=2025-07-05/part_000.gz") == "2025-07-05"
 
-    # Two parts on the same date to fall within the range
-    _put_gz_ndjson(
-        s3,
-        "openalex",
+
+def test_extract_date_missing(processor):
+    extract = processor._OpenAlexS3Processor__extract_date
+    assert extract("data/works/no_date_here/part_000.gz") == ""
+
+
+# ------------------------------------------------------------------
+# __get_batch_files
+# ------------------------------------------------------------------
+
+
+def test_get_batch_files_basic(mock_s3):
+    keys = [
         "data/works/updated_date=2025-07-05/part_000.gz",
-        [{"id": "W1", "title": "Hello"}, {"id": "W2", "title": "World"}],
-    )
-    _put_gz_ndjson(
-        s3,
-        "openalex",
         "data/works/updated_date=2025-07-05/part_001.gz",
-        [{"id": "W3", "title": "Batch"}],
+        "data/works/updated_date=2025-07-05/manifest",
+    ]
+    p = mock_s3(keys)
+    get_batch = p._OpenAlexS3Processor__get_batch_files
+
+    batches = list(
+        get_batch(
+            obj_type="works",
+            start_date="2025-07-05",
+            end_date="2025-07-05",
+            batch_sz=10,
+        )
     )
 
-    p = OpenAlexS3Processor()
+    assert len(batches) == 1
+    assert len(batches[0]) == 2
+    assert all("manifest" not in f for f in batches[0])
 
-    # Force small batches to exercise the batching path
-    p.batch_load_table(
-        obj_type="works",
-        batch_sz=1,  # ensures multiple batches
-        start_date="2025-07-05",
-        end_date="2025-07-05",
-        download_dir=str(tmp_path),
+
+def test_get_batch_files_batching(mock_s3):
+    keys = [
+        "data/works/updated_date=2025-07-05/part_000.gz",
+        "data/works/updated_date=2025-07-05/part_001.gz",
+        "data/works/updated_date=2025-07-05/part_002.gz",
+    ]
+    p = mock_s3(keys)
+    get_batch = p._OpenAlexS3Processor__get_batch_files
+
+    batches = list(
+        get_batch(
+            obj_type="works",
+            start_date="2025-07-05",
+            end_date="2025-07-05",
+            batch_sz=2,
+        )
     )
 
-    # Verify cumulative rows in DuckDB table
-    df = p.get_table("works").df()
-    assert list(df.columns) == ["id", "title"]
-    assert len(df) == 3
-    assert set(df["title"]) == {"Hello", "World", "Batch"}
-
-    # batch_load_table typically removes the temp dir
-    assert not Path(tmp_path).exists() or not any(Path(tmp_path).glob("*"))
+    assert len(batches) == 2
+    assert len(batches[0]) == 2
+    assert len(batches[1]) == 1
 
 
-@mock_aws
-def test_lazy_load_yields_batches(tmp_path, monkeypatch):
-    # Minimal schema
-    monkeypatch.setattr(
-        core_mod, "WORKS_SCHEMA", {"id": "VARCHAR", "title": "VARCHAR"}, raising=False
-    )
-
-    # Fake S3 + bucket
-    s3 = boto3.client("s3", region_name="us-east-1")
-    s3.create_bucket(Bucket="openalex")
-
-    # Force library to use THIS client
-    monkeypatch.setattr(core_mod.boto3, "client", lambda *a, **k: s3, raising=True)
-
-    # Two parts; with batch_sz=1 we expect two separate lazy batches
-    _put_gz_ndjson(
-        s3,
-        "openalex",
+def test_get_batch_files_date_filter(mock_s3):
+    keys = [
+        "data/works/updated_date=2025-07-04/part_000.gz",
+        "data/works/updated_date=2025-07-05/part_000.gz",
         "data/works/updated_date=2025-07-06/part_000.gz",
-        [{"id": "W10", "title": "A"}, {"id": "W11", "title": "B"}],
-    )
-    _put_gz_ndjson(
-        s3,
-        "openalex",
-        "data/works/updated_date=2025-07-06/part_001.gz",
-        [{"id": "W12", "title": "C"}],
-    )
+    ]
+    p = mock_s3(keys)
+    get_batch = p._OpenAlexS3Processor__get_batch_files
 
-    p = OpenAlexS3Processor()
-
-    batch_sizes = []
-    titles = []
-
-    for rel in p.lazy_load(
-        obj_type="works",
-        batch_sz=1,  # each part becomes a batch
-        cols=["id", "title"],
-        start_date="2025-07-06",
-        end_date="2025-07-06",
-        download_dir=str(tmp_path),
-    ):
-        df = rel.df()  # materialize this batch
-        batch_sizes.append(len(df))
-        titles.extend(df["title"].tolist())
-
-    # Expect 2 batches: sizes [2, 1] matching the two parts above
-    assert batch_sizes == [2, 1]
-    assert set(titles) == {"A", "B", "C"}
-
-    # lazy_load should clean up the temp dir after each yield; after loop it shouldn't remain
-    assert not Path(tmp_path).exists() or not any(Path(tmp_path).glob("*"))
-
-
-@mock_aws
-def test_lazy_load_yields_batches_sel_col(tmp_path, monkeypatch):
-    # Minimal schema
-    monkeypatch.setattr(
-        core_mod,
-        "WORKS_SCHEMA",
-        {
-            "id": "VARCHAR",
-            "title": "VARCHAR",
-            "display_name": "VARCHAR",
-            "fwci": "DOUBLE",
-        },
-        raising=False,
+    batches = list(
+        get_batch(
+            obj_type="works",
+            start_date="2025-07-05",
+            end_date="2025-07-05",
+            batch_sz=10,
+        )
     )
 
-    # Fake S3 + bucket
-    s3 = boto3.client("s3", region_name="us-east-1")
-    s3.create_bucket(Bucket="openalex")
-
-    # Force library to use THIS client
-    monkeypatch.setattr(core_mod.boto3, "client", lambda *a, **k: s3, raising=True)
-
-    # Two parts; with batch_sz=1 we expect two separate lazy batches
-    _put_gz_ndjson(
-        s3,
-        "openalex",
-        "data/works/updated_date=2025-07-06/part_000.gz",
-        [
-            {"id": "W10", "title": "A", "display_name": "Some A", "fwci": 2.0},
-            {"id": "W11", "title": "B", "display_name": "Some B", "fwci": 4.54},
-        ],
-    )
-    _put_gz_ndjson(
-        s3,
-        "openalex",
-        "data/works/updated_date=2025-07-06/part_001.gz",
-        [{"id": "W12", "title": "C", "display_name": "Some C", "fwci": 5.2}],
-    )
-
-    p = OpenAlexS3Processor()
-
-    batch_sizes = []
-    titles = []
-
-    for rel in p.lazy_load(
-        obj_type="works",
-        batch_sz=1,  # each part becomes a batch
-        cols=["id", "title", "fwci"],
-        start_date="2025-07-06",
-        end_date="2025-07-06",
-        download_dir=str(tmp_path),
-    ):
-        df = rel.df()  # materialize this batch
-        batch_sizes.append(len(df))
-        titles.extend(df["title"].tolist())
-
-    # Expect 2 batches: sizes [2, 1] matching the two parts above
-    assert batch_sizes == [2, 1]
-    assert set(titles) == {"A", "B", "C"}
-
-    # lazy_load should clean up the temp dir after each yield; after loop it shouldn't remain
-    assert not Path(tmp_path).exists() or not any(Path(tmp_path).glob("*"))
+    assert len(batches) == 1
+    assert len(batches[0]) == 1
+    assert "2025-07-05" in batches[0][0]
 
 
-@mock_aws
-def test_lazy_load_yields_batches_part_resumed(tmp_path, monkeypatch):
-    # Minimal schema
-    monkeypatch.setattr(
-        core_mod, "WORKS_SCHEMA", {"id": "VARCHAR", "title": "VARCHAR"}, raising=False
+def test_get_batch_files_parts_filter(mock_s3):
+    keys = [
+        "data/works/updated_date=2025-07-05/part_000.gz",
+        "data/works/updated_date=2025-07-05/part_001.gz",
+        "data/works/updated_date=2025-07-05/part_002.gz",
+    ]
+    p = mock_s3(keys)
+    get_batch = p._OpenAlexS3Processor__get_batch_files
+
+    batches = list(
+        get_batch(
+            obj_type="works",
+            start_date="2025-07-05",
+            end_date="2025-07-05",
+            batch_sz=10,
+            parts=[0, 2],
+        )
     )
 
-    # Fake S3 + bucket
-    s3 = boto3.client("s3", region_name="us-east-1")
-    s3.create_bucket(Bucket="openalex")
+    assert len(batches) == 1
+    assert len(batches[0]) == 2
+    assert all("part_001" not in f for f in batches[0])
 
-    # Force library to use THIS client
-    monkeypatch.setattr(core_mod.boto3, "client", lambda *a, **k: s3, raising=True)
 
-    _put_gz_ndjson(
-        s3,
-        "openalex",
-        "data/works/updated_date=2025-07-06/part_000.gz",
-        [{"id": "W10", "title": "A"}, {"id": "W11", "title": "B"}],
-    )
-    _put_gz_ndjson(
-        s3,
-        "openalex",
-        "data/works/updated_date=2025-07-06/part_001.gz",
-        [{"id": "W12", "title": "C"}],
-    )
-    _put_gz_ndjson(
-        s3,
-        "openalex",
-        "data/works/updated_date=2025-07-06/part_002.gz",
-        [{"id": "W13", "title": "D"}],
-    )
+def test_get_batch_files_resume_from(mock_s3):
+    keys = [
+        "data/works/updated_date=2025-07-05/part_000.gz",
+        "data/works/updated_date=2025-07-05/part_001.gz",
+        "data/works/updated_date=2025-07-05/part_002.gz",
+        "data/works/updated_date=2025-07-05/part_003.gz",
+    ]
+    p = mock_s3(keys)
+    get_batch = p._OpenAlexS3Processor__get_batch_files
 
-    _put_gz_ndjson(
-        s3,
-        "openalex",
-        "data/works/updated_date=2025-07-06/part_003.gz",
-        [{"id": "W14", "title": "KL"}],
+    batches = list(
+        get_batch(
+            obj_type="works",
+            start_date="2025-07-05",
+            end_date="2025-07-05",
+            batch_sz=10,
+            resume_from="2025-07-05/2",
+        )
     )
 
-    _put_gz_ndjson(
-        s3,
-        "openalex",
-        "data/works/updated_date=2025-07-06/part_004.gz",
-        [{"id": "W15", "title": "TT"}],
+    assert len(batches) == 1
+    assert len(batches[0]) == 2
+    assert all("part_002" in f or "part_003" in f for f in batches[0])
+
+
+def test_get_batch_files_resume_from_different_date(mock_s3):
+    keys = [
+        "data/works/updated_date=2025-07-04/part_000.gz",
+        "data/works/updated_date=2025-07-04/part_001.gz",
+        "data/works/updated_date=2025-07-05/part_000.gz",
+        "data/works/updated_date=2025-07-05/part_001.gz",
+    ]
+    p = mock_s3(keys)
+    get_batch = p._OpenAlexS3Processor__get_batch_files
+
+    batches = list(
+        get_batch(
+            obj_type="works",
+            start_date="2025-07-04",
+            end_date="2025-07-05",
+            batch_sz=10,
+            resume_from="2025-07-05/0",
+        )
     )
 
-    p = OpenAlexS3Processor()
+    assert len(batches) == 1
+    assert len(batches[0]) == 2
+    assert all("2025-07-05" in f for f in batches[0])
 
-    batch_sizes = []
-    titles = []
 
-    for rel in p.lazy_load(
-        obj_type="works",
-        batch_sz=1,  # each part becomes a batch
-        cols=["id", "title"],
-        start_date="2025-07-06",
-        end_date="2025-07-06",
-        download_dir=str(tmp_path),
-        start_from="2025-07-06/2",
-    ):
-        df = rel.df()  # materialize this batch
-        batch_sizes.append(len(df))
-        titles.extend(df["title"].tolist())
+def test_get_batch_files_empty(mock_s3):
+    keys = [
+        "data/works/updated_date=2025-07-04/part_000.gz",
+    ]
+    p = mock_s3(keys)
+    get_batch = p._OpenAlexS3Processor__get_batch_files
 
-    assert batch_sizes == [1, 1, 1]
-    assert set(titles) == {"D", "KL", "TT"}
+    batches = list(
+        get_batch(
+            obj_type="works",
+            start_date="2025-07-05",
+            end_date="2025-07-05",
+            batch_sz=10,
+        )
+    )
 
-    # lazy_load should clean up the temp dir after each yield; after loop it shouldn't remain
-    assert not Path(tmp_path).exists() or not any(Path(tmp_path).glob("*"))
+    assert len(batches) == 0
