@@ -1,7 +1,7 @@
 import datetime
 import re
 from collections.abc import Generator
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import boto3
 import botocore
@@ -75,6 +75,7 @@ class OpenAlexS3Processor:
     def __get_batch_files(
         self,
         obj_type: str,
+        data_type: Literal["parquet", "jsonl"],
         start_date: str,
         end_date: str,
         batch_sz: int,
@@ -89,6 +90,8 @@ class OpenAlexS3Processor:
         ----------
         obj_type : str
             OpenAlex object type e.g. 'works', 'authors', 'sources'.
+        data_type: str
+            S3 bucket type e.g. 'parquet', 'jsonl'
         start_date : str
             Start of date range in 'YYYY-mm-dd' format (inclusive).
         end_date : str
@@ -121,7 +124,9 @@ class OpenAlexS3Processor:
 
         paginator = self.__s3_client.get_paginator("list_objects_v2")
 
-        for page in paginator.paginate(Bucket="openalex", Prefix=f"data/{obj_type}/"):
+        for page in paginator.paginate(
+            Bucket="openalex", Prefix=f"data/{data_type}/{obj_type}/"
+        ):
             for obj in page.get("Contents", []):
 
                 if len(files) >= batch_sz:
@@ -147,7 +152,10 @@ class OpenAlexS3Processor:
                     continue
 
                 part_num = int(
-                    key.split("/")[-1].replace("part_", "").replace(".gz", "")
+                    key.split("/")[-1]
+                    .replace("part_", "")
+                    .replace(".parquet", "")
+                    .replace(".gz", "")
                 )
 
                 if parts is not None and part_num not in parts:
@@ -167,6 +175,7 @@ class OpenAlexS3Processor:
     def lazy_load(
         self,
         obj_type: str,
+        data_type: Literal["jsonl", "parquet"] = "parquet",
         columns: list[str] | None = None,
         limit: int | None = None,
         start_date: str | None = None,
@@ -251,6 +260,7 @@ class OpenAlexS3Processor:
         all_batches = list(
             self.__get_batch_files(
                 obj_type=obj_type,
+                data_type=data_type,
                 start_date=start_date,
                 end_date=end_date,
                 batch_sz=batch_size,
@@ -276,12 +286,22 @@ class OpenAlexS3Processor:
                     )
 
                 s3_urls = [f"s3://openalex/{f}" for f in fb]
-                rel = self.__conn.sql(
-                    f"""
+                rel = (
+                    self.__conn.sql(
+                        f"""
                                       SELECT {cols}
                                       FROM read_json_auto({s3_urls}, ignore_errors=true)
                                       {where_sel}{limit_sel}
                                       """
+                    )
+                    if data_type == "jsonl"
+                    else self.__conn.sql(
+                        f"""
+                                                               SELECT {cols}
+                                                               FROM read_parquet({s3_urls})
+                                                               {where_sel}{limit_sel}
+                                                               """
+                    )
                 )
 
                 yield fb, rel

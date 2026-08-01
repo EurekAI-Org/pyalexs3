@@ -31,12 +31,14 @@ def mock_s3(processor):
 
 def test_extract_date_valid(processor):
     extract = processor._OpenAlexS3Processor__extract_date
-    assert extract("data/works/updated_date=2025-07-05/part_000.gz") == "2025-07-05"
+    assert (
+        extract("data/jsonl/works/updated_date=2025-07-05/part_000.gz") == "2025-07-05"
+    )
 
 
 def test_extract_date_missing(processor):
     extract = processor._OpenAlexS3Processor__extract_date
-    assert extract("data/works/no_date_here/part_000.gz") == ""
+    assert extract("data/jsonl/works/no_date_here/part_000.gz") == ""
 
 
 # ------------------------------------------------------------------
@@ -46,9 +48,9 @@ def test_extract_date_missing(processor):
 
 def test_get_batch_files_basic(mock_s3):
     keys = [
-        "data/works/updated_date=2025-07-05/part_000.gz",
-        "data/works/updated_date=2025-07-05/part_001.gz",
-        "data/works/updated_date=2025-07-05/manifest",
+        "data/jsonl/works/updated_date=2025-07-05/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_001.gz",
+        "data/jsonl/works/updated_date=2025-07-05/manifest",
     ]
     p = mock_s3(keys)
     get_batch = p._OpenAlexS3Processor__get_batch_files
@@ -56,6 +58,7 @@ def test_get_batch_files_basic(mock_s3):
     batches = list(
         get_batch(
             obj_type="works",
+            data_type="jsonl",
             start_date="2025-07-05",
             end_date="2025-07-05",
             batch_sz=10,
@@ -69,9 +72,9 @@ def test_get_batch_files_basic(mock_s3):
 
 def test_get_batch_files_batching(mock_s3):
     keys = [
-        "data/works/updated_date=2025-07-05/part_000.gz",
-        "data/works/updated_date=2025-07-05/part_001.gz",
-        "data/works/updated_date=2025-07-05/part_002.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_001.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_002.gz",
     ]
     p = mock_s3(keys)
     get_batch = p._OpenAlexS3Processor__get_batch_files
@@ -79,6 +82,7 @@ def test_get_batch_files_batching(mock_s3):
     batches = list(
         get_batch(
             obj_type="works",
+            data_type="jsonl",
             start_date="2025-07-05",
             end_date="2025-07-05",
             batch_sz=2,
@@ -92,9 +96,9 @@ def test_get_batch_files_batching(mock_s3):
 
 def test_get_batch_files_date_filter(mock_s3):
     keys = [
-        "data/works/updated_date=2025-07-04/part_000.gz",
-        "data/works/updated_date=2025-07-05/part_000.gz",
-        "data/works/updated_date=2025-07-06/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-04/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-06/part_000.gz",
     ]
     p = mock_s3(keys)
     get_batch = p._OpenAlexS3Processor__get_batch_files
@@ -102,6 +106,7 @@ def test_get_batch_files_date_filter(mock_s3):
     batches = list(
         get_batch(
             obj_type="works",
+            data_type="jsonl",
             start_date="2025-07-05",
             end_date="2025-07-05",
             batch_sz=10,
@@ -115,9 +120,9 @@ def test_get_batch_files_date_filter(mock_s3):
 
 def test_get_batch_files_parts_filter(mock_s3):
     keys = [
-        "data/works/updated_date=2025-07-05/part_000.gz",
-        "data/works/updated_date=2025-07-05/part_001.gz",
-        "data/works/updated_date=2025-07-05/part_002.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_001.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_002.gz",
     ]
     p = mock_s3(keys)
     get_batch = p._OpenAlexS3Processor__get_batch_files
@@ -125,6 +130,7 @@ def test_get_batch_files_parts_filter(mock_s3):
     batches = list(
         get_batch(
             obj_type="works",
+            data_type="jsonl",
             start_date="2025-07-05",
             end_date="2025-07-05",
             batch_sz=10,
@@ -139,10 +145,10 @@ def test_get_batch_files_parts_filter(mock_s3):
 
 def test_get_batch_files_resume_from(mock_s3):
     keys = [
-        "data/works/updated_date=2025-07-05/part_000.gz",
-        "data/works/updated_date=2025-07-05/part_001.gz",
-        "data/works/updated_date=2025-07-05/part_002.gz",
-        "data/works/updated_date=2025-07-05/part_003.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_001.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_002.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_003.gz",
     ]
     p = mock_s3(keys)
     get_batch = p._OpenAlexS3Processor__get_batch_files
@@ -150,6 +156,7 @@ def test_get_batch_files_resume_from(mock_s3):
     batches = list(
         get_batch(
             obj_type="works",
+            data_type="jsonl",
             start_date="2025-07-05",
             end_date="2025-07-05",
             batch_sz=10,
@@ -164,10 +171,10 @@ def test_get_batch_files_resume_from(mock_s3):
 
 def test_get_batch_files_resume_from_different_date(mock_s3):
     keys = [
-        "data/works/updated_date=2025-07-04/part_000.gz",
-        "data/works/updated_date=2025-07-04/part_001.gz",
-        "data/works/updated_date=2025-07-05/part_000.gz",
-        "data/works/updated_date=2025-07-05/part_001.gz",
+        "data/jsonl/works/updated_date=2025-07-04/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-04/part_001.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-05/part_001.gz",
     ]
     p = mock_s3(keys)
     get_batch = p._OpenAlexS3Processor__get_batch_files
@@ -175,6 +182,7 @@ def test_get_batch_files_resume_from_different_date(mock_s3):
     batches = list(
         get_batch(
             obj_type="works",
+            data_type="jsonl",
             start_date="2025-07-04",
             end_date="2025-07-05",
             batch_sz=10,
@@ -189,7 +197,7 @@ def test_get_batch_files_resume_from_different_date(mock_s3):
 
 def test_get_batch_files_empty(mock_s3):
     keys = [
-        "data/works/updated_date=2025-07-04/part_000.gz",
+        "data/jsonl/works/updated_date=2025-07-04/part_000.gz",
     ]
     p = mock_s3(keys)
     get_batch = p._OpenAlexS3Processor__get_batch_files
@@ -197,6 +205,7 @@ def test_get_batch_files_empty(mock_s3):
     batches = list(
         get_batch(
             obj_type="works",
+            data_type="jsonl",
             start_date="2025-07-05",
             end_date="2025-07-05",
             batch_sz=10,

@@ -117,6 +117,7 @@ for file_batch, rel in p.lazy_load(obj_type="works"):
 | Parameter      | Type                | Default      | Description                                         |
 | -------------- | ------------------- | ------------ | --------------------------------------------------- |
 | `obj_type`     | `str`               | required     | OpenAlex object type e.g. `works`, `authors`        |
+| `data_type`    | `str`               | `parquet`    | OpenAlex S3 bucket type e.g. `parquet`, `jsonl`     |
 | `columns`      | `list[str] \| None` | `None`       | Columns to select. `None` = all                     |
 | `limit`        | `int \| None`       | `None`       | Max records per batch                               |
 | `start_date`   | `str \| None`       | `2016-06-24` | Start of date range `YYYY-mm-dd` (inclusive)        |
@@ -175,4 +176,3 @@ If you are using this for research purposes please use this BibTeX for citation:
     note = {[Accessed 09-10-2025]},
 }
 ```
-
