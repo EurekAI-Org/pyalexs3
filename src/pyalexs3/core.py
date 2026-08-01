@@ -75,6 +75,7 @@ class OpenAlexS3Processor:
     def __get_batch_files(
         self,
         obj_type: str,
+        data_type: Literal["parquet", "jsonl"],
         start_date: str,
         end_date: str,
         batch_sz: int,
@@ -89,6 +90,8 @@ class OpenAlexS3Processor:
         ----------
         obj_type : str
             OpenAlex object type e.g. 'works', 'authors', 'sources'.
+        data_type: str
+            S3 bucket type e.g. 'parquet', 'jsonl'
         start_date : str
             Start of date range in 'YYYY-mm-dd' format (inclusive).
         end_date : str
@@ -121,7 +124,9 @@ class OpenAlexS3Processor:
 
         paginator = self.__s3_client.get_paginator("list_objects_v2")
 
-        for page in paginator.paginate(Bucket="openalex", Prefix=f"data/{obj_type}/"):
+        for page in paginator.paginate(
+            Bucket="openalex", Prefix=f"data/{data_type}/{obj_type}/"
+        ):
             for obj in page.get("Contents", []):
 
                 if len(files) >= batch_sz:
@@ -255,6 +260,7 @@ class OpenAlexS3Processor:
         all_batches = list(
             self.__get_batch_files(
                 obj_type=obj_type,
+                data_type=data_type,
                 start_date=start_date,
                 end_date=end_date,
                 batch_sz=batch_size,
