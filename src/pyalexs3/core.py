@@ -1,7 +1,7 @@
 import datetime
 import re
 from collections.abc import Generator
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import boto3
 import botocore
@@ -147,7 +147,10 @@ class OpenAlexS3Processor:
                     continue
 
                 part_num = int(
-                    key.split("/")[-1].replace("part_", "").replace(".gz", "")
+                    key.split("/")[-1]
+                    .replace("part_", "")
+                    .replace(".parquet", "")
+                    .replace(".gz", "")
                 )
 
                 if parts is not None and part_num not in parts:
@@ -167,6 +170,7 @@ class OpenAlexS3Processor:
     def lazy_load(
         self,
         obj_type: str,
+        data_type: Literal["jsonl", "parquet"] = "parquet",
         columns: list[str] | None = None,
         limit: int | None = None,
         start_date: str | None = None,
@@ -276,12 +280,22 @@ class OpenAlexS3Processor:
                     )
 
                 s3_urls = [f"s3://openalex/{f}" for f in fb]
-                rel = self.__conn.sql(
-                    f"""
+                rel = (
+                    self.__conn.sql(
+                        f"""
                                       SELECT {cols}
                                       FROM read_json_auto({s3_urls}, ignore_errors=true)
                                       {where_sel}{limit_sel}
                                       """
+                    )
+                    if data_type == "jsonl"
+                    else self.__conn.sql(
+                        f"""
+                                                               SELECT {cols}
+                                                               FROM read_parquet({s3_urls})
+                                                               {where_sel}{limit_sel}
+                                                               """
+                    )
                 )
 
                 yield fb, rel
